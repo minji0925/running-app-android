@@ -18,15 +18,23 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHeight_default="percent"
-        app:layout_constraintHeight_percent="0.2">
+        app:layout_constraintHeight_percent="0.25">
 
         <EditText
-            android:id="@+id/editTextText"
+            android:id="@+id/editTextStart"
             android:layout_width="match_parent"
-            android:hint="@string/start_point"
+            android:hint="@string/starting_point"
             android:inputType="text"
             android:layout_height="48dp"
             android:autofillHints="starting-point"/>
+
+        <EditText
+            android:id="@+id/editTextDestination"
+            android:layout_width="match_parent"
+            android:hint="@string/destination"
+            android:inputType="text"
+            android:layout_height="48dp"
+            android:autofillHints="destination"/>
 
         <Button
             android:id="@+id/button"
@@ -47,7 +55,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHeight_default="percent"
-        app:layout_constraintHeight_percent="0.8" />
+        app:layout_constraintHeight_percent="0.75" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
 

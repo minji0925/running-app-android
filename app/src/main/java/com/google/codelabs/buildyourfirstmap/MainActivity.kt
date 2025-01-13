@@ -1,18 +1,5 @@
-// Copyright 2020 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package com.google.codelabs.buildyourfirstmap
+import android.graphics.Color
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
@@ -27,17 +14,88 @@ import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.libraries.places.api.Places
 import com.google.android.libraries.places.api.net.PlacesClient
 import android.location.Geocoder
+import com.google.android.gms.maps.model.PolylineOptions
 import org.json.JSONObject
 import java.io.IOException
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
 
 val api_key = BuildConfig.GOOGLE_MAPS_API_KEY
+val graphhopper_api = BuildConfig.GRAPHHOPPER_API_KEY
 
+class RouteFetcher(private val apiKey: String) {
+    val client = OkHttpClient()
+    val url = "https://graphhopper.com/api/1/route?key=$apiKey"
+
+    fun fetchRoutes(start: LatLng, end: LatLng, callback: (JSONObject?) -> Unit) {
+        val jsonBody = """
+            {
+                "points": [
+                    [${start.longitude}, ${start.latitude}],
+                    [${end.longitude}, ${end.latitude}]
+                ],
+                "profile": "foot",
+                "locale": "en",
+                "instructions": true,
+                "calc_points": true,
+                "points_encoded": false
+            }
+        """.trimIndent()
+
+        val request = Request.Builder()
+            .url(url)
+            .post(RequestBody.create("application/json; charset=utf-8".toMediaType(), jsonBody))
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                e.printStackTrace()
+                callback(null)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val responseData = response.body?.string()
+                callback(if (responseData != null) JSONObject(responseData) else null)
+            }
+        })
+    }
+
+    private fun geocodeAddress(address: String, callback: (LatLng?) -> Unit) {
+        val client = OkHttpClient()
+        val url = "https://graphhopper.com/api/1/geocode?q=${address}&locale=en&key=YOUR_GRAPHHOPPER_API_KEY"
+
+        val request = Request.Builder().url(url).build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                e.printStackTrace()
+                callback(null)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.body?.string()?.let { responseData ->
+                    val json = JSONObject(responseData)
+                    val hits = json.getJSONArray("hits")
+                    if (hits.length() > 0) {
+                        val firstHit = hits.getJSONObject(0)
+                        val lat = firstHit.getDouble("point.lat")
+                        val lng = firstHit.getDouble("point.lng")
+                        callback(LatLng(lat, lng))
+                    } else {
+                        callback(null)
+                    }
+                }
+            }
+        })
+    }
+}
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var mMap: GoogleMap
-    private lateinit var editText: EditText
+    private lateinit var startingPoint: EditText
+    private lateinit var destination: EditText
     private lateinit var button: Button
+    private val routeFetcher = RouteFetcher(graphhopper_api)
 
     private var searchTypes = listOf("park", "trail", "hiking", "tourist_attraction")
     private var keywordTypes = listOf("running path", "scenic view")
@@ -46,7 +104,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        editText = findViewById(R.id.editTextText)
+        startingPoint = findViewById(R.id.editTextStart)
+        destination = findViewById(R.id.editTextDestination)
         button = findViewById(R.id.button)
 
         // Initialize the map
@@ -58,34 +117,29 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         Places.initialize(applicationContext, api_key)
         val placesClient: PlacesClient = Places.createClient(this)
 
-        /*button.setOnClickListener {
-            var location = editText.text.toString().trim()
-            location = "ChIJgf4OJaelfDURmDvA_sHyPUM"
-            if (location.isNotEmpty()) {
-                val latLng = LatLng(37.7749, -122.4194) // Replace with geocoded LatLng
-                mMap.addMarker(MarkerOptions().position(latLng).title(location))
-                mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(latLng, 12f))
-            } else {
-                Toast.makeText(this, "Enter a valid location", Toast.LENGTH_SHORT).show()
-            }
-        }*/
-
         button.setOnClickListener {
-            val locationName = editText.text.toString().trim()
+            val start = startingPoint.text.toString().trim()
+            val dest = destination.text.toString().trim()
 
-            if (locationName.isNotEmpty()) {
+            if (start.isNotEmpty() && dest.isNotEmpty()) {
                 // Use Geocoder API to fetch LatLng
                 val geocoder = Geocoder(this)
-                val addressList = geocoder.getFromLocationName(locationName, 1)
-                if (addressList != null && addressList.isNotEmpty()) {
-                    val address = addressList[0]
-                    val latLng = LatLng(address.latitude, address.longitude)
+                val addressList_start = geocoder.getFromLocationName(start, 1)
+                val addressList_dest = geocoder.getFromLocationName(dest, 1)
+                //change maxresults if i want more than 1 results
+                if (addressList_start != null && addressList_start.isNotEmpty() && addressList_dest != null && addressList_dest.isNotEmpty()) {
+                    val address_start = addressList_start[0]
+                    val start_latLng = LatLng(address_start.latitude, address_start.longitude)
+                    val address_dest = addressList_dest[0]
+                    val dest_latLng = LatLng(address_dest.latitude, address_dest.longitude)
 
                     // Add marker and move camera
-                    mMap.addMarker(MarkerOptions().position(latLng).title(locationName))
-                    mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(latLng, 12f))
+                    mMap.addMarker(MarkerOptions().position(start_latLng).title(start))
+                    mMap.addMarker(MarkerOptions().position(dest_latLng).title(dest))
+                    mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(start_latLng, 12f))
 
-                    fetchNearbyPlaces(latLng)
+                    //fetchNearbyPlaces(latLng)
+                    fetchRoutes(start_latLng, dest_latLng)
                 } else {
                     Toast.makeText(this, "Location not found", Toast.LENGTH_SHORT).show()
                 }
@@ -125,7 +179,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                             combinedResults.add(results.getJSONObject(i))
                         }
                         runOnUiThread {
-                            displayResultsOnMap(combinedResults)
+                            synchronized(this) {
+                                displayResultsOnMap(combinedResults.take(50)) // Display up to 50 markers
+                            }
                         }
                     }
                 }
@@ -158,4 +214,86 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
             })
         }
+    }
+
+    private fun fetchRoutes(start: LatLng, end: LatLng) {
+        val client = OkHttpClient()
+        val url = "https://graphhopper.com/api/1/route" +
+                "?point=${start.latitude},${start.longitude}" +
+                "&point=${end.latitude},${end.longitude}" +
+                "&profile=foot" +
+                "&key=$graphhopper_api"
+
+        val request = Request.Builder().url(url).build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                e.printStackTrace()
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.body?.string()?.let { responseData ->
+                    val json = JSONObject(responseData)
+                    val paths = json.getJSONArray("paths")
+                    if (paths.length() > 0) {
+                        val pointsEncoded = paths.getJSONObject(0).getString("points")
+                        print(paths.getJSONObject(0).getString("points"))
+                        val polyline = decodePolyline(pointsEncoded)
+                        runOnUiThread {
+                            displayRouteOnMap(polyline)
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    private fun displayResultsOnMap(results: List<JSONObject>) {
+        for (result in results) {
+            val location = result.getJSONObject("geometry").getJSONObject("location")
+            val lat = location.getDouble("lat")
+            val lng = location.getDouble("lng")
+            val name = result.getString("name")
+
+            val latLng = LatLng(lat, lng)
+            mMap.addMarker(MarkerOptions().position(latLng).title(name))
+        }
+    }
+    private fun decodePolyline(encoded: String): List<LatLng> {
+        val poly = ArrayList<LatLng>()
+        var index = 0
+        val len = encoded.length
+        var lat = 0
+        var lng = 0
+
+        while (index < len) {
+            var b: Int
+            var shift = 0
+            var result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or (b and 0x1f shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            val dLat = if (result and 1 != 0) (result shr 1).inv() else result shr 1
+            lat += dLat
+
+            shift = 0
+            result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or (b and 0x1f shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            val dLng = if (result and 1 != 0) (result shr 1).inv() else result shr 1
+            lng += dLng
+
+            val latLng = LatLng(lat / 1E5, lng / 1E5)
+            poly.add(latLng)
+        }
+        return poly
+    }
+
+    private fun displayRouteOnMap(polyline: List<LatLng>) {
+        mMap.addPolyline(PolylineOptions().addAll(polyline).color(Color.BLUE).width(5f))
+    }
 }
