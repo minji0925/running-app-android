@@ -14,11 +14,13 @@ import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.libraries.places.api.Places
 import com.google.android.libraries.places.api.net.PlacesClient
 import android.location.Geocoder
+import android.util.Log
 import com.google.android.gms.maps.model.PolylineOptions
 import org.json.JSONObject
 import java.io.IOException
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
+import org.json.JSONArray
 
 val api_key = BuildConfig.GOOGLE_MAPS_API_KEY
 val graphhopper_api = BuildConfig.GRAPHHOPPER_API_KEY
@@ -96,6 +98,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var destination: EditText
     private lateinit var button: Button
     private val routeFetcher = RouteFetcher(graphhopper_api)
+    val combinedResults = mutableListOf<JSONObject>()
 
     private var searchTypes = listOf("park", "trail", "hiking", "tourist_attraction")
     private var keywordTypes = listOf("running path", "scenic view")
@@ -139,7 +142,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(start_latLng, 12f))
 
                     //fetchNearbyPlaces(latLng)
-                    fetchRoutes(start_latLng, dest_latLng)
+                    //fetchRoutes(start_latLng, dest_latLng)
+                    fetchNearbyPlaces(start_latLng)
+                    useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
+                    useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
+                    useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
                 } else {
                     Toast.makeText(this, "Location not found", Toast.LENGTH_SHORT).show()
                 }
@@ -155,11 +162,30 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun fetchNearbyPlaces(location: LatLng) {
         val radius = 2000 // Search radius in meters
-        val combinedResults = mutableListOf<JSONObject>()
-
         val client = OkHttpClient()
 
-        // Fetch places based on searchTypes
+        // Helper function to handle API responses
+        fun handleResponse(responseData: String?) {
+            if (responseData == null) return
+            try {
+                val json = JSONObject(responseData)
+                val results = json.optJSONArray("results") ?: JSONArray()
+                synchronized(combinedResults) {
+                    // Add up to 10 results or fewer if there are not enough
+                    for (i in 0 until minOf(results.length(), 10)) {
+                        combinedResults.add(results.getJSONObject(i))
+                    }
+                }
+                runOnUiThread {
+                    //displayResultsOnMap(combinedResults.take(50)) // Display up to 50 markers
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Log.e("FetchNearbyPlaces", "Error parsing response: ${e.message}")
+            }
+        }
+
+        // Fetch places for each type in searchTypes
         for (type in searchTypes) {
             val url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json" +
                     "?location=${location.latitude},${location.longitude}" +
@@ -169,26 +195,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     e.printStackTrace()
+                    Log.e("FetchNearbyPlaces", "Request failed: ${e.message}")
                 }
 
                 override fun onResponse(call: Call, response: Response) {
-                    response.body?.string()?.let { responseData ->
-                        val json = JSONObject(responseData)
-                        val results = json.getJSONArray("results")
-                        for (i in 0 until results.length()) {
-                            combinedResults.add(results.getJSONObject(i))
-                        }
-                        runOnUiThread {
-                            synchronized(this) {
-                                displayResultsOnMap(combinedResults.take(50)) // Display up to 50 markers
-                            }
-                        }
-                    }
+                    response.body?.string()?.let(::handleResponse)
+                    Log.e("FetchNearbyPlaces", "Request failed: $combinedResults")
                 }
             })
         }
 
-        // Fetch places based on keywordTypes
+        // Fetch places for each keyword in keywordTypes
         for (keyword in keywordTypes) {
             val url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json" +
                     "?location=${location.latitude},${location.longitude}" +
@@ -198,19 +215,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     e.printStackTrace()
+                    Log.e("FetchNearbyPlaces", "Request failed: ${e.message}")
                 }
 
                 override fun onResponse(call: Call, response: Response) {
-                    response.body?.string()?.let { responseData ->
-                        val json = JSONObject(responseData)
-                        val results = json.getJSONArray("results")
-                        for (i in 0 until results.length()) {
-                            combinedResults.add(results.getJSONObject(i))
-                        }
-                        runOnUiThread {
-                            displayResultsOnMap(combinedResults)
-                        }
-                    }
+                    response.body?.string()?.let(::handleResponse)
                 }
             })
         }
@@ -237,6 +246,68 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     if (paths.length() > 0) {
                         val pointsEncoded = paths.getJSONObject(0).getString("points")
                         print(paths.getJSONObject(0).getString("points"))
+                        val polyline = decodePolyline(pointsEncoded)
+                        runOnUiThread {
+                            displayRouteOnMap(polyline)
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    private fun useNearbyPlacesAsWaypoints(start: LatLng, end: LatLng) {
+        if (combinedResults.size < 2) {
+            Log.e("Waypoints", "Not enough nearby places to select waypoints")
+            return
+        }
+
+        // Randomly select two places
+        val shuffledResults = combinedResults.shuffled()
+        val waypoint1 = shuffledResults[0]
+        val waypoint2 = shuffledResults[1]
+
+        // Extract LatLng from the waypoints
+        val waypoint1LatLng = LatLng(
+            waypoint1.getJSONObject("geometry").getJSONObject("location").getDouble("lat"),
+            waypoint1.getJSONObject("geometry").getJSONObject("location").getDouble("lng")
+        )
+        val waypoint2LatLng = LatLng(
+            waypoint2.getJSONObject("geometry").getJSONObject("location").getDouble("lat"),
+            waypoint2.getJSONObject("geometry").getJSONObject("location").getDouble("lng")
+        )
+
+        // Log selected waypoints for debugging
+        Log.d("Waypoints", "Selected waypoints: $waypoint1LatLng, $waypoint2LatLng")
+
+        // Fetch routes using waypoints
+        fetchRoutesWithWaypoints(start, end, listOf(waypoint1LatLng, waypoint2LatLng))
+    }
+
+    private fun fetchRoutesWithWaypoints(start: LatLng, end: LatLng, waypoints: List<LatLng>) {
+        val client = OkHttpClient()
+
+        // Build the route URL with waypoints
+        val waypointsQuery = waypoints.joinToString("&") { "point=${it.latitude},${it.longitude}" }
+        val url = "https://graphhopper.com/api/1/route" +
+                "?point=${start.latitude},${start.longitude}" +
+                "&$waypointsQuery" +
+                "&point=${end.latitude},${end.longitude}" +
+                "&profile=foot" +
+                "&key=$graphhopper_api"
+
+        val request = Request.Builder().url(url).build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                e.printStackTrace()
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.body?.string()?.let { responseData ->
+                    val json = JSONObject(responseData)
+                    val paths = json.getJSONArray("paths")
+                    if (paths.length() > 0) {
+                        val pointsEncoded = paths.getJSONObject(0).getString("points")
                         val polyline = decodePolyline(pointsEncoded)
                         runOnUiThread {
                             displayRouteOnMap(polyline)
