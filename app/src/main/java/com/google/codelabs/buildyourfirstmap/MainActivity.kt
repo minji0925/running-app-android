@@ -21,6 +21,7 @@ import java.io.IOException
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONArray
+import java.util.concurrent.CopyOnWriteArrayList
 
 val api_key = BuildConfig.GOOGLE_MAPS_API_KEY
 val graphhopper_api = BuildConfig.GRAPHHOPPER_API_KEY
@@ -98,7 +99,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var destination: EditText
     private lateinit var button: Button
     private val routeFetcher = RouteFetcher(graphhopper_api)
-    val combinedResults = mutableListOf<JSONObject>()
+    val combinedResults = CopyOnWriteArrayList<JSONObject>() // Thread-safe list
 
     private var searchTypes = listOf("park", "trail", "hiking", "tourist_attraction")
     private var keywordTypes = listOf("running path", "scenic view")
@@ -141,12 +142,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     mMap.addMarker(MarkerOptions().position(dest_latLng).title(dest))
                     mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(start_latLng, 12f))
 
-                    //fetchNearbyPlaces(latLng)
                     //fetchRoutes(start_latLng, dest_latLng)
-                    fetchNearbyPlaces(start_latLng)
+                    fetchNearbyPlaces(start_latLng) {
+                        useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
+                    }
+                    //fetchNearbyPlaces(start_latLng)
                     useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
-                    useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
-                    useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
+                    //useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
+                    //useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
                 } else {
                     Toast.makeText(this, "Location not found", Toast.LENGTH_SHORT).show()
                 }
@@ -160,62 +163,50 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         mMap = googleMap
     }
 
-    private fun fetchNearbyPlaces(location: LatLng) {
+
+    private fun fetchNearbyPlaces(location: LatLng, onComplete: () -> Unit) {
         val radius = 2000 // Search radius in meters
         val client = OkHttpClient()
 
-        // Helper function to handle API responses
+        var pendingRequests = 0
+
         fun handleResponse(responseData: String?) {
             if (responseData == null) return
             try {
                 val json = JSONObject(responseData)
                 val results = json.optJSONArray("results") ?: JSONArray()
                 synchronized(combinedResults) {
-                    // Add up to 10 results or fewer if there are not enough
                     for (i in 0 until minOf(results.length(), 10)) {
                         combinedResults.add(results.getJSONObject(i))
                     }
                 }
-                runOnUiThread {
-                    //displayResultsOnMap(combinedResults.take(50)) // Display up to 50 markers
-                }
             } catch (e: Exception) {
                 e.printStackTrace()
-                Log.e("FetchNearbyPlaces", "Error parsing response: ${e.message}")
+            } finally {
+                synchronized(this@MainActivity) {
+                    pendingRequests--
+                    if (pendingRequests == 0) onComplete()
+                }
             }
         }
 
-        // Fetch places for each type in searchTypes
-        for (type in searchTypes) {
+        val allSearchTypes = searchTypes + keywordTypes
+        pendingRequests = allSearchTypes.size
+
+        for (typeOrKeyword in allSearchTypes) {
+            val param = if (typeOrKeyword in searchTypes) "type" else "keyword"
             val url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json" +
                     "?location=${location.latitude},${location.longitude}" +
-                    "&radius=$radius&type=$type&key=$api_key"
+                    "&radius=$radius&$param=$typeOrKeyword&key=$api_key"
 
             val request = Request.Builder().url(url).build()
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     e.printStackTrace()
-                    Log.e("FetchNearbyPlaces", "Request failed: ${e.message}")
-                }
-
-                override fun onResponse(call: Call, response: Response) {
-                    response.body?.string()?.let(::handleResponse)
-                    Log.e("FetchNearbyPlaces", "Request failed: $combinedResults")
-                }
-            })
-        }
-
-        // Fetch places for each keyword in keywordTypes
-        for (keyword in keywordTypes) {
-            val url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json" +
-                    "?location=${location.latitude},${location.longitude}" +
-                    "&radius=$radius&keyword=$keyword&key=$api_key"
-
-            val request = Request.Builder().url(url).build()
-            client.newCall(request).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    e.printStackTrace()
-                    Log.e("FetchNearbyPlaces", "Request failed: ${e.message}")
+                    synchronized(this@MainActivity) {
+                        pendingRequests--
+                        if (pendingRequests == 0) onComplete()
+                    }
                 }
 
                 override fun onResponse(call: Call, response: Response) {
@@ -304,6 +295,55 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
             override fun onResponse(call: Call, response: Response) {
                 response.body?.string()?.let { responseData ->
+                    try {
+                        val json = JSONObject(responseData)
+                        val paths = json.getJSONArray("paths")
+                        val path = paths.getJSONObject(0)
+
+                        // Extract route information
+                        val distance = path.getDouble("distance") // in meters
+                        val time = path.getLong("time") // in milliseconds
+                        val pointsEncoded = path.getString("points") // encoded polyline string
+
+                        // Extract turn-by-turn instructions
+                        val instructions = path.optJSONArray("instructions")
+                        instructions?.let {
+                            for (i in 0 until it.length()) {
+                                val instruction = it.getJSONObject(i)
+                                val text = instruction.getString("text")
+                                val streetName = instruction.optString("street_name", "N/A")
+                                val instructionDistance = instruction.getDouble("distance")
+                                val instructionTime = instruction.getLong("time")
+
+                                // Log instruction details
+                                Log.d(
+                                    "RouteInstructions",
+                                    "Instruction: $text, Street: $streetName, " +
+                                            "Distance: $instructionDistance, Time: $instructionTime"
+                                )
+                            }
+                        }
+
+                        // Log high-level route data
+                        Log.d(
+                            "RouteSummary",
+                            "Distance: $distance meters, Time: $time ms, Points: $pointsEncoded"
+                        )
+
+                        // Decode the polyline and display the route on the map
+                        val polyline = decodePolyline(pointsEncoded)
+                        runOnUiThread {
+                            displayRouteOnMap(polyline)
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        Log.e("RouteResponse", "Error parsing JSON: ${e.message}")
+                    }
+                }
+            }
+
+            /*override fun onResponse(call: Call, response: Response) {
+                response.body?.string()?.let { responseData ->
                     val json = JSONObject(responseData)
                     val paths = json.getJSONArray("paths")
                     if (paths.length() > 0) {
@@ -314,7 +354,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         }
                     }
                 }
-            }
+            }*/
         })
     }
 
