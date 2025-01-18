@@ -15,6 +15,7 @@ import com.google.android.libraries.places.api.Places
 import com.google.android.libraries.places.api.net.PlacesClient
 import android.location.Geocoder
 import android.util.Log
+
 import com.google.android.gms.maps.model.PolylineOptions
 import org.json.JSONObject
 import java.io.IOException
@@ -23,8 +24,17 @@ import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONArray
 import java.util.concurrent.CopyOnWriteArrayList
 
+import com.aallam.openai.api.logging.LogLevel
+import com.aallam.openai.client.LoggingConfig
+import com.aallam.openai.client.OpenAI
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+
+
 val api_key = BuildConfig.GOOGLE_MAPS_API_KEY
 val graphhopper_api = BuildConfig.GRAPHHOPPER_API_KEY
+val openai_api = BuildConfig.OPENAI_API_KEY
+val openAI = OpenAI(token = openai_api, logging = LoggingConfig(LogLevel.Info))
 
 class RouteFetcher(private val apiKey: String) {
     val client = OkHttpClient()
