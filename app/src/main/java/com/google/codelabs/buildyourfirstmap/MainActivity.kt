@@ -23,12 +23,21 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONArray
 import java.util.concurrent.CopyOnWriteArrayList
+import android.os.Build
+
 
 import com.aallam.openai.api.logging.LogLevel
 import com.aallam.openai.client.LoggingConfig
 import com.aallam.openai.client.OpenAI
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import java.io.File
+import com.aallam.openai.api.chat.ChatCompletion
+import com.aallam.openai.api.chat.ChatCompletionRequest
+import com.aallam.openai.api.chat.ChatMessage
+import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.model.ModelId
+import kotlinx.coroutines.runBlocking
 
 
 val api_key = BuildConfig.GOOGLE_MAPS_API_KEY
@@ -110,6 +119,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var button: Button
     private val routeFetcher = RouteFetcher(graphhopper_api)
     val combinedResults = CopyOnWriteArrayList<JSONObject>() // Thread-safe list
+    private val allRoutes = JSONArray() // Store all generated routes
 
     private var searchTypes = listOf("park", "trail", "hiking", "tourist_attraction")
     private var keywordTypes = listOf("running path", "scenic view")
@@ -136,43 +146,205 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             val dest = destination.text.toString().trim()
 
             if (start.isNotEmpty() && dest.isNotEmpty()) {
-                // Use Geocoder API to fetch LatLng
                 val geocoder = Geocoder(this)
-                val addressList_start = geocoder.getFromLocationName(start, 1)
-                val addressList_dest = geocoder.getFromLocationName(dest, 1)
-                //change maxresults if i want more than 1 results
-                if (addressList_start != null && addressList_start.isNotEmpty() && addressList_dest != null && addressList_dest.isNotEmpty()) {
-                    val address_start = addressList_start[0]
-                    val start_latLng = LatLng(address_start.latitude, address_start.longitude)
-                    val address_dest = addressList_dest[0]
-                    val dest_latLng = LatLng(address_dest.latitude, address_dest.longitude)
 
-                    // Add marker and move camera
-                    mMap.addMarker(MarkerOptions().position(start_latLng).title(start))
-                    mMap.addMarker(MarkerOptions().position(dest_latLng).title(dest))
-                    mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(start_latLng, 12f))
+                // Use the asynchronous Geocoder API introduced in Android 33
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    geocoder.getFromLocationName(start, 1) { addressListStart ->
+                        geocoder.getFromLocationName(dest, 1) { addressListDest ->
+                            if (!addressListStart.isNullOrEmpty() && !addressListDest.isNullOrEmpty()) {
+                                val addressStart = addressListStart[0]
+                                val startLatLng = LatLng(addressStart.latitude, addressStart.longitude)
 
-                    //fetchRoutes(start_latLng, dest_latLng)
-                    fetchNearbyPlaces(start_latLng) {
-                        useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
+                                val addressDest = addressListDest[0]
+                                val destLatLng = LatLng(addressDest.latitude, addressDest.longitude)
+
+                                // Wrap map operations in runOnUiThread
+                                runOnUiThread {
+                                    // Add marker and move camera
+                                    mMap.addMarker(MarkerOptions().position(startLatLng).title(start))
+                                    mMap.addMarker(MarkerOptions().position(destLatLng).title(dest))
+                                    mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(startLatLng, 12f))
+                                }
+
+                                // Continue with route fetching
+                                fetchNearbyPlaces(startLatLng) {
+                                    // Generate multiple routes
+                                    repeat(5) { // Generate 5 different routes
+                                        useNearbyPlacesAsWaypoints(startLatLng, destLatLng)
+                                    }
+
+                                    // Save routes to a JSON file
+                                    val routesJson = JSONObject()
+                                    routesJson.put("routes", allRoutes)
+
+                                    val file = File(applicationContext.filesDir, "routes.json")
+                                    file.writeText(routesJson.toString())
+
+                                    // Use OpenAI to analyze routes
+                                    analyzeRoutesWithOpenAI(file)
+                                }
+                            } else {
+                                runOnUiThread {
+                                    Toast.makeText(this, "Location not found", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
                     }
-                    //fetchNearbyPlaces(start_latLng)
-                    useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
-                    //useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
-                    //useNearbyPlacesAsWaypoints(start_latLng, dest_latLng)
                 } else {
-                    Toast.makeText(this, "Location not found", Toast.LENGTH_SHORT).show()
+                    // For older Android versions, use the synchronous API
+                    try {
+                        val addressListStart = geocoder.getFromLocationName(start, 1)
+                        val addressListDest = geocoder.getFromLocationName(dest, 1)
+
+                        if (!addressListStart.isNullOrEmpty() && !addressListDest.isNullOrEmpty()) {
+                            val addressStart = addressListStart[0]
+                            val startLatLng = LatLng(addressStart.latitude, addressStart.longitude)
+
+                            val addressDest = addressListDest[0]
+                            val destLatLng = LatLng(addressDest.latitude, addressDest.longitude)
+
+                            // Wrap map operations in runOnUiThread
+                            runOnUiThread {
+                                // Add marker and move camera
+                                mMap.addMarker(MarkerOptions().position(startLatLng).title(start))
+                                mMap.addMarker(MarkerOptions().position(destLatLng).title(dest))
+                                mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(startLatLng, 12f))
+                            }
+
+                            // Fetch routes and analyze them
+                            fetchNearbyPlaces(startLatLng) {
+                                // Generate multiple routes
+                                repeat(5) { // Generate 5 different routes
+                                    useNearbyPlacesAsWaypoints(startLatLng, destLatLng)
+                                }
+
+                                // Save routes to a JSON file
+                                val routesJson = JSONObject()
+                                routesJson.put("routes", allRoutes)
+
+                                val file = File(applicationContext.filesDir, "routes.json")
+                                file.writeText(routesJson.toString())
+
+                                // Use OpenAI to analyze routes
+                                analyzeRoutesWithOpenAI(file)
+                            }
+                        } else {
+                            runOnUiThread {
+                                Toast.makeText(this, "Location not found", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } catch (e: IOException) {
+                        runOnUiThread {
+                            Toast.makeText(this, "Failed to fetch location: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             } else {
-                Toast.makeText(this, "Enter a valid location", Toast.LENGTH_SHORT).show()
+                runOnUiThread {
+                    Toast.makeText(this, "Enter a valid location", Toast.LENGTH_SHORT).show()
+                }
             }
+        }
+    }
+
+    private fun analyzeRoutesWithOpenAI(routesFile: File) = runBlocking {
+        // Read the file in chunks or limit the data size
+        val routesData = try {
+            val jsonObject = JSONObject(routesFile.readText())
+            val routes = jsonObject.getJSONArray("routes")
+            // Limit the number of routes or their size
+            val limitedRoutes = JSONArray()
+            for (i in 0 until minOf(routes.length(), 3)) { // Limit to 3 routes
+                val route = routes.getJSONObject(i)
+                // Create a simplified version of the route
+                val simplifiedRoute = JSONObject()
+                simplifiedRoute.put("distance", route.getJSONObject("path").optDouble("distance"))
+                simplifiedRoute.put("time", route.getJSONObject("path").optDouble("time"))
+                // Only include essential waypoints information
+                simplifiedRoute.put("waypoints", route.optJSONArray("waypoints"))
+                limitedRoutes.put(simplifiedRoute)
+            }
+            JSONObject().put("routes", limitedRoutes).toString()
+        } catch (e: Exception) {
+            Log.e("OpenAI Analysis", "Error processing routes file: ${e.message}")
+            return@runBlocking
+        }
+        
+        val prompt = """
+            Analyze these walking routes and select the best one based on the following criteria:
+            1. Total distance (shorter is better but not crucial)
+            2. Interesting waypoints and attractions along the way
+            3. Safety and walkability of the route
+            4. Scenic value
+            
+            Routes data: $routesData
+            
+            Please provide the index of the best route (0-${minOf(allRoutes.length() - 1, 2)}) and a brief explanation why.
+        """.trimIndent()
+
+        try {
+            val chatCompletionRequest = ChatCompletionRequest(
+                model = ModelId("gpt-3.5-turbo"),
+                messages = listOf(
+                    ChatMessage(
+                        role = ChatRole.User,
+                        content = prompt
+                    )
+                )
+            )
+
+            val completion: ChatCompletion = openAI.chatCompletion(chatCompletionRequest)
+            val response = completion.choices.first().message.content ?: ""
+            
+            // Process the response in smaller chunks
+            runOnUiThread {
+                try {
+                    val bestRouteIndex = response.let {
+                        val matcher = """\d+""".toRegex().find(it)
+                        matcher?.value?.toIntOrNull() ?: 0
+                    }
+                    
+                    if (bestRouteIndex < allRoutes.length()) {
+                        val bestRoute = allRoutes.getJSONObject(bestRouteIndex)
+                        displayBestRoute(bestRoute)
+                        Toast.makeText(this@MainActivity, "Best route selected!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Log.e("OpenAI Analysis", "Invalid route index: $bestRouteIndex")
+                        displayBestRoute(allRoutes.getJSONObject(0))
+                    }
+                } catch (e: Exception) {
+                    Log.e("OpenAI Analysis", "Error displaying route: ${e.message}")
+                    Toast.makeText(this@MainActivity, "Error displaying route", Toast.LENGTH_SHORT).show()
+                }
+            }
+            
+            // Log the AI's explanation in chunks
+            val chunkSize = 1000
+            response.chunked(chunkSize).forEach { chunk ->
+                Log.d("OpenAI Analysis", chunk)
+            }
+            
+        } catch (e: Exception) {
+            Log.e("OpenAI Error", "Failed to analyze routes: ${e.message}")
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, "Failed to analyze routes", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun displayBestRoute(routeJson: JSONObject) {
+        // Implementation to display the selected route on the map
+        val points = routeJson.getJSONObject("path").getString("points")
+        val polyline = decodePolyline(points)
+        runOnUiThread {
+            displayRouteOnMap(polyline)
         }
     }
 
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
     }
-
 
     private fun fetchNearbyPlaces(location: LatLng, onComplete: () -> Unit) {
         val radius = 2000 // Search radius in meters
@@ -309,6 +481,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         val json = JSONObject(responseData)
                         val paths = json.getJSONArray("paths")
                         val path = paths.getJSONObject(0)
+
+                        // Create a route object with all relevant information
+                        val routeObject = JSONObject()
+                        routeObject.put("path", path)
+                        routeObject.put("waypoints", JSONArray().apply {
+                            put(JSONObject().put("lat", waypoints[0].latitude).put("lng", waypoints[0].longitude))
+                            put(JSONObject().put("lat", waypoints[1].latitude).put("lng", waypoints[1].longitude))
+                        })
+                        
+                        // Add to allRoutes
+                        synchronized(allRoutes) {
+                            allRoutes.put(routeObject)
+                        }
 
                         // Extract route information
                         val distance = path.getDouble("distance") // in meters
