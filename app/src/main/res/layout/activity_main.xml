@@ -6,6 +6,15 @@
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
+    <!-- Add this container at the top -->
+    <FrameLayout
+        android:id="@+id/autocomplete_fragment_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:elevation="2dp"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"/>
+
     <!-- Top Controls -->
     <LinearLayout
         android:id="@+id/controls_container"
@@ -18,23 +27,35 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHeight_default="percent"
-        app:layout_constraintHeight_percent="0.25">
+        app:layout_constraintHeight_percent="0.3">
 
         <EditText
             android:id="@+id/editTextStart"
             android:layout_width="match_parent"
+            android:layout_height="48dp"
             android:hint="@string/starting_point"
             android:inputType="text"
-            android:layout_height="48dp"
+            android:focusable="false"
+            android:clickable="true"
             android:autofillHints="starting-point"/>
 
         <EditText
             android:id="@+id/editTextDestination"
             android:layout_width="match_parent"
+            android:layout_height="48dp"
             android:hint="@string/destination"
             android:inputType="text"
-            android:layout_height="48dp"
+            android:focusable="false"
+            android:clickable="true"
             android:autofillHints="destination"/>
+
+        <EditText
+            android:id="@+id/editTextDistance"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:hint="@string/preferred_distance_km"
+            android:inputType="numberDecimal"
+            android:autofillHints="distance"/>
 
         <Button
             android:id="@+id/button"
@@ -55,7 +76,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHeight_default="percent"
-        app:layout_constraintHeight_percent="0.75" />
+        app:layout_constraintHeight_percent="0.7" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
 

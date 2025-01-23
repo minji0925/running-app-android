@@ -1,4 +1,6 @@
 package com.google.codelabs.buildyourfirstmap
+import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.widget.Button
@@ -14,6 +16,7 @@ import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.libraries.places.api.Places
 import com.google.android.libraries.places.api.net.PlacesClient
 import android.location.Geocoder
+import android.net.http.UrlRequest
 import android.util.Log
 
 import com.google.android.gms.maps.model.PolylineOptions
@@ -37,7 +40,20 @@ import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ChatRole
 import com.aallam.openai.api.model.ModelId
+import com.google.android.libraries.places.api.model.Place
+import com.google.android.libraries.places.widget.Autocomplete
+import com.google.android.libraries.places.widget.AutocompleteActivity
+import com.google.android.libraries.places.widget.model.AutocompleteActivityMode
 import kotlinx.coroutines.runBlocking
+import com.google.android.libraries.places.widget.AutocompleteSupportFragment
+import com.google.android.libraries.places.widget.listener.PlaceSelectionListener
+import com.google.android.libraries.places.widget.model.PlaceSelectionListener
+import com.google.android.libraries.places.widget.model.Status
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 
 
 val api_key = BuildConfig.GOOGLE_MAPS_API_KEY
@@ -112,10 +128,73 @@ class RouteFetcher(private val apiKey: String) {
     }
 }
 
+class WeatherService {
+    private val accuWeatherApiKey = "your_accuweather_api_key"
+    private val client = OkHttpClient()
+
+    suspend fun getWeatherData(latitude: Double, longitude: Double): WeatherData? {
+        // First get location key
+        val locationKey = getLocationKey(latitude, longitude) ?: return null
+        
+        // Then get weather data
+        return getCurrentConditions(locationKey)
+    }
+
+    private suspend fun getLocationKey(latitude: Double, longitude: Double): String? {
+        val url = "http://dataservice.accuweather.com/locations/v1/cities/geoposition/search" +
+                "?apikey=$accuWeatherApiKey&q=$latitude,$longitude"
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder().url(url).build()
+                val response = client.newCall(request).execute()
+                val jsonData = JSONObject(response.body?.string() ?: return@withContext null)
+                jsonData.getString("Key")
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+        }
+    }
+
+    private suspend fun getCurrentConditions(locationKey: String): WeatherData? {
+        val url = "http://dataservice.accuweather.com/currentconditions/v1/$locationKey" +
+                "?apikey=$accuWeatherApiKey"
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder().url(url).build()
+                val response = client.newCall(request).execute()
+                val jsonArray = JSONArray(response.body?.string())
+                val weatherJson = jsonArray.getJSONObject(0)
+                
+                WeatherData(
+                    temperature = weatherJson
+                        .getJSONObject("Temperature")
+                        .getJSONObject("Metric")
+                        .getDouble("Value"),
+                    weatherText = weatherJson.getString("WeatherText"),
+                    isDayTime = weatherJson.getBoolean("IsDayTime")
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+        }
+    }
+}
+
+data class WeatherData(
+    val temperature: Double,
+    val weatherText: String,
+    val isDayTime: Boolean
+)
+
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var mMap: GoogleMap
     private lateinit var startingPoint: EditText
     private lateinit var destination: EditText
+    private lateinit var distancePreference: EditText
     private lateinit var button: Button
     private val routeFetcher = RouteFetcher(graphhopper_api)
     val combinedResults = CopyOnWriteArrayList<JSONObject>() // Thread-safe list
@@ -124,12 +203,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var searchTypes = listOf("park", "trail", "hiking", "tourist_attraction")
     private var keywordTypes = listOf("running path", "scenic view")
 
+    private val weatherService = WeatherService()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         startingPoint = findViewById(R.id.editTextStart)
         destination = findViewById(R.id.editTextDestination)
+        distancePreference = findViewById(R.id.editTextDistance)
         button = findViewById(R.id.button)
 
         // Initialize the map
@@ -140,6 +222,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         // Initialize Places API
         Places.initialize(applicationContext, api_key)
         val placesClient: PlacesClient = Places.createClient(this)
+
+        // Setup Places Autocomplete for starting point
+        setupPlacesAutocomplete(startingPoint)
+        // Setup Places Autocomplete for destination
+        setupPlacesAutocomplete(destination)
 
         button.setOnClickListener {
             val start = startingPoint.text.toString().trim()
@@ -248,97 +335,41 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    private fun analyzeRoutesWithOpenAI(routesFile: File) = runBlocking {
-        // Read the file in chunks or limit the data size
-        val routesData = try {
-            val jsonObject = JSONObject(routesFile.readText())
-            val routes = jsonObject.getJSONArray("routes")
-            // Limit the number of routes or their size
-            val limitedRoutes = JSONArray()
-            for (i in 0 until minOf(routes.length(), 3)) { // Limit to 3 routes
-                val route = routes.getJSONObject(i)
-                // Create a simplified version of the route
-                val simplifiedRoute = JSONObject()
-                simplifiedRoute.put("distance", route.getJSONObject("path").optDouble("distance"))
-                simplifiedRoute.put("time", route.getJSONObject("path").optDouble("time"))
-                // Only include essential waypoints information
-                simplifiedRoute.put("waypoints", route.optJSONArray("waypoints"))
-                limitedRoutes.put(simplifiedRoute)
-            }
-            JSONObject().put("routes", limitedRoutes).toString()
-        } catch (e: Exception) {
-            Log.e("OpenAI Analysis", "Error processing routes file: ${e.message}")
-            return@runBlocking
-        }
-        
-        val prompt = """
-            Analyze these walking routes and select the best one based on the following criteria:
-            1. Total distance (shorter is better but not crucial)
-            2. Interesting waypoints and attractions along the way
-            3. Safety and walkability of the route
-            4. Scenic value
+    private fun setupPlacesAutocomplete(editText: EditText) {
+        editText.setOnClickListener {
+            // Initialize Places Autocomplete Fragment
+            val autocompleteFragment = AutocompleteSupportFragment.newInstance()
             
-            Routes data: $routesData
-            
-            Please provide the index of the best route (0-${minOf(allRoutes.length() - 1, 2)}) and a brief explanation why.
-        """.trimIndent()
+            // Specify the types of place data to return
+            autocompleteFragment.setPlaceFields(listOf(
+                Place.Field.ID,
+                Place.Field.NAME,
+                Place.Field.ADDRESS,
+                Place.Field.LAT_LNG
+            ))
 
-        try {
-            val chatCompletionRequest = ChatCompletionRequest(
-                model = ModelId("gpt-3.5-turbo"),
-                messages = listOf(
-                    ChatMessage(
-                        role = ChatRole.User,
-                        content = prompt
-                    )
-                )
-            )
-
-            val completion: ChatCompletion = openAI.chatCompletion(chatCompletionRequest)
-            val response = completion.choices.first().message.content ?: ""
-            
-            // Process the response in smaller chunks
-            runOnUiThread {
-                try {
-                    val bestRouteIndex = response.let {
-                        val matcher = """\d+""".toRegex().find(it)
-                        matcher?.value?.toIntOrNull() ?: 0
-                    }
-                    
-                    if (bestRouteIndex < allRoutes.length()) {
-                        val bestRoute = allRoutes.getJSONObject(bestRouteIndex)
-                        displayBestRoute(bestRoute)
-                        Toast.makeText(this@MainActivity, "Best route selected!", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Log.e("OpenAI Analysis", "Invalid route index: $bestRouteIndex")
-                        displayBestRoute(allRoutes.getJSONObject(0))
-                    }
-                } catch (e: Exception) {
-                    Log.e("OpenAI Analysis", "Error displaying route: ${e.message}")
-                    Toast.makeText(this@MainActivity, "Error displaying route", Toast.LENGTH_SHORT).show()
+            // Set up the callback
+            autocompleteFragment.setOnPlaceSelectedListener(object : PlaceSelectionListener {
+                override fun onPlaceSelected(place: Place) {
+                    editText.setText(place.address)
+                    supportFragmentManager.beginTransaction()
+                        .remove(autocompleteFragment)
+                        .commit()
                 }
-            }
-            
-            // Log the AI's explanation in chunks
-            val chunkSize = 1000
-            response.chunked(chunkSize).forEach { chunk ->
-                Log.d("OpenAI Analysis", chunk)
-            }
-            
-        } catch (e: Exception) {
-            Log.e("OpenAI Error", "Failed to analyze routes: ${e.message}")
-            runOnUiThread {
-                Toast.makeText(this@MainActivity, "Failed to analyze routes", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
 
-    private fun displayBestRoute(routeJson: JSONObject) {
-        // Implementation to display the selected route on the map
-        val points = routeJson.getJSONObject("path").getString("points")
-        val polyline = decodePolyline(points)
-        runOnUiThread {
-            displayRouteOnMap(polyline)
+                override fun onError(status: UrlRequest.Status) {
+                    Toast.makeText(applicationContext, "Error: ${status.statusMessage}", Toast.LENGTH_SHORT).show()
+                    supportFragmentManager.beginTransaction()
+                        .remove(autocompleteFragment)
+                        .commit()
+                }
+            })
+
+            // Show the fragment
+            supportFragmentManager.beginTransaction()
+                .replace(R.id.autocomplete_fragment_container, autocompleteFragment)
+                .addToBackStack(null)
+                .commit()
         }
     }
 
@@ -536,20 +567,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     }
                 }
             }
-
-            /*override fun onResponse(call: Call, response: Response) {
-                response.body?.string()?.let { responseData ->
-                    val json = JSONObject(responseData)
-                    val paths = json.getJSONArray("paths")
-                    if (paths.length() > 0) {
-                        val pointsEncoded = paths.getJSONObject(0).getString("points")
-                        val polyline = decodePolyline(pointsEncoded)
-                        runOnUiThread {
-                            displayRouteOnMap(polyline)
-                        }
-                    }
-                }
-            }*/
         })
     }
 
@@ -601,5 +618,130 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun displayRouteOnMap(polyline: List<LatLng>) {
         mMap.addPolyline(PolylineOptions().addAll(polyline).color(Color.BLUE).width(5f))
+    }
+
+    private fun analyzeRoutesWithOpenAI(routesFile: File) = runBlocking {
+        // Read the file in chunks or limit the data size
+        val routesData = try {
+            val jsonObject = JSONObject(routesFile.readText())
+            val routes = jsonObject.getJSONArray("routes")
+            // Limit the number of routes or their size
+            val limitedRoutes = JSONArray()
+            for (i in 0 until minOf(routes.length(), 3)) { // Limit to 3 routes
+                val route = routes.getJSONObject(i)
+                // Create a simplified version of the route
+                val simplifiedRoute = JSONObject()
+                simplifiedRoute.put("distance", route.getJSONObject("path").optDouble("distance"))
+                simplifiedRoute.put("time", route.getJSONObject("path").optDouble("time"))
+                // Only include essential waypoints information
+                simplifiedRoute.put("waypoints", route.optJSONArray("waypoints"))
+                limitedRoutes.put(simplifiedRoute)
+            }
+            JSONObject().put("routes", limitedRoutes).toString()
+        } catch (e: Exception) {
+            Log.e("OpenAI Analysis", "Error processing routes file: ${e.message}")
+            return@runBlocking
+        }
+        
+        val prompt = """
+            Analyze these walking routes and select the best one based on the following criteria:
+            1. Total distance (shorter is better but not crucial)
+            2. Interesting waypoints and attractions along the way
+            3. Safety and walkability of the route
+            4. Scenic value
+            
+            Routes data: $routesData
+            
+            Please provide the index of the best route (0-${minOf(allRoutes.length() - 1, 2)}) and a brief explanation why.
+        """.trimIndent()
+
+        try {
+            val chatCompletionRequest = ChatCompletionRequest(
+                model = ModelId("gpt-3.5-turbo"),
+                messages = listOf(
+                    ChatMessage(
+                        role = ChatRole.User,
+                        content = prompt
+                    )
+                )
+            )
+
+            val completion: ChatCompletion = openAI.chatCompletion(chatCompletionRequest)
+            val response = completion.choices.first().message.content ?: ""
+            
+            // Process the response in smaller chunks
+            runOnUiThread {
+                try {
+                    val bestRouteIndex = response.let {
+                        val matcher = """\d+""".toRegex().find(it)
+                        matcher?.value?.toIntOrNull() ?: 0
+                    }
+                    
+                    if (bestRouteIndex < allRoutes.length()) {
+                        val bestRoute = allRoutes.getJSONObject(bestRouteIndex)
+                        displayBestRoute(bestRoute)
+                        Toast.makeText(this@MainActivity, "Best route selected!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Log.e("OpenAI Analysis", "Invalid route index: $bestRouteIndex")
+                        displayBestRoute(allRoutes.getJSONObject(0))
+                    }
+                } catch (e: Exception) {
+                    Log.e("OpenAI Analysis", "Error displaying route: ${e.message}")
+                    Toast.makeText(this@MainActivity, "Error displaying route", Toast.LENGTH_SHORT).show()
+                }
+            }
+            
+            // Log the AI's explanation in chunks
+            val chunkSize = 1000
+            response.chunked(chunkSize).forEach { chunk ->
+                Log.d("OpenAI Analysis", chunk)
+            }
+            
+        } catch (e: Exception) {
+            Log.e("OpenAI Error", "Failed to analyze routes: ${e.message}")
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, "Failed to analyze routes", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun displayBestRoute(routeJson: JSONObject) {
+        // Implementation to display the selected route on the map
+        val points = routeJson.getJSONObject("path").getString("points")
+        val polyline = decodePolyline(points)
+        runOnUiThread {
+            displayRouteOnMap(polyline)
+        }
+    }
+
+    private suspend fun processRouteWithWeather(startLatLng: LatLng, destLatLng: LatLng) {
+        // Get weather for both locations
+        val startWeather = weatherService.getWeatherData(
+            startLatLng.latitude,
+            startLatLng.longitude
+        )
+        val destWeather = weatherService.getWeatherData(
+            destLatLng.latitude,
+            destLatLng.longitude
+        )
+
+        // Create weather context for AI model
+        val weatherContext = buildString {
+            append("Weather conditions:\n")
+            append("Starting point: ${startWeather?.weatherText ?: "Unknown"}, ")
+            append("Temperature: ${startWeather?.temperature ?: "Unknown"}°C\n")
+            append("Destination: ${destWeather?.weatherText ?: "Unknown"}, ")
+            append("Temperature: ${destWeather?.temperature ?: "Unknown"}°C")
+        }
+
+        // Add weather context to your AI model input
+        val aiInput = """
+            Route from ${startLatLng.latitude},${startLatLng.longitude} 
+            to ${destLatLng.latitude},${destLatLng.longitude}
+            $weatherContext
+            Please suggest route modifications based on weather conditions.
+        """.trimIndent()
+
+        // Process with your AI model...
     }
 }
