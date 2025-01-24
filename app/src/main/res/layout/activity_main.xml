@@ -35,8 +35,6 @@
             android:layout_height="48dp"
             android:hint="@string/starting_point"
             android:inputType="text"
-            android:focusable="false"
-            android:clickable="true"
             android:autofillHints="starting-point"/>
 
         <EditText
@@ -45,8 +43,6 @@
             android:layout_height="48dp"
             android:hint="@string/destination"
             android:inputType="text"
-            android:focusable="false"
-            android:clickable="true"
             android:autofillHints="destination"/>
 
         <EditText
@@ -117,3 +113,6 @@
         app:layout_constraintTop_toTopOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>-->
+
+<!--android:focusable="false"
+            android:clickable="true"-->

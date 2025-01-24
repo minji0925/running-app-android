@@ -41,7 +41,7 @@ class WeatherService {
             try {
                 val request = Request.Builder().url(url).build()
                 val response = client.newCall(request).execute()
-                val jsonArray = JSONArray(response.body?.string())
+                val jsonArray = org.json.JSONArray(response.body?.string())
                 val weatherJson = jsonArray.getJSONObject(0)
                 
                 WeatherData(

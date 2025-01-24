@@ -18,6 +18,7 @@ import com.google.android.libraries.places.api.net.PlacesClient
 import android.location.Geocoder
 import android.net.http.UrlRequest
 import android.util.Log
+import com.google.android.gms.common.api.Status
 
 import com.google.android.gms.maps.model.PolylineOptions
 import org.json.JSONObject
@@ -47,8 +48,6 @@ import com.google.android.libraries.places.widget.model.AutocompleteActivityMode
 import kotlinx.coroutines.runBlocking
 import com.google.android.libraries.places.widget.AutocompleteSupportFragment
 import com.google.android.libraries.places.widget.listener.PlaceSelectionListener
-import com.google.android.libraries.places.widget.model.PlaceSelectionListener
-import com.google.android.libraries.places.widget.model.Status
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineScope
@@ -223,10 +222,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         Places.initialize(applicationContext, api_key)
         val placesClient: PlacesClient = Places.createClient(this)
 
-        // Setup Places Autocomplete for starting point
-        setupPlacesAutocomplete(startingPoint)
-        // Setup Places Autocomplete for destination
-        setupPlacesAutocomplete(destination)
+        // Comment out or remove the Places Autocomplete setup
+        // setupPlacesAutocomplete(startingPoint)
+        // setupPlacesAutocomplete(destination)
 
         button.setOnClickListener {
             val start = startingPoint.text.toString().trim()
@@ -335,43 +333,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    private fun setupPlacesAutocomplete(editText: EditText) {
-        editText.setOnClickListener {
-            // Initialize Places Autocomplete Fragment
-            val autocompleteFragment = AutocompleteSupportFragment.newInstance()
-            
-            // Specify the types of place data to return
-            autocompleteFragment.setPlaceFields(listOf(
-                Place.Field.ID,
-                Place.Field.NAME,
-                Place.Field.ADDRESS,
-                Place.Field.LAT_LNG
-            ))
-
-            // Set up the callback
-            autocompleteFragment.setOnPlaceSelectedListener(object : PlaceSelectionListener {
-                override fun onPlaceSelected(place: Place) {
-                    editText.setText(place.address)
-                    supportFragmentManager.beginTransaction()
-                        .remove(autocompleteFragment)
-                        .commit()
-                }
-
-                override fun onError(status: UrlRequest.Status) {
-                    Toast.makeText(applicationContext, "Error: ${status.statusMessage}", Toast.LENGTH_SHORT).show()
-                    supportFragmentManager.beginTransaction()
-                        .remove(autocompleteFragment)
-                        .commit()
-                }
-            })
-
-            // Show the fragment
-            supportFragmentManager.beginTransaction()
-                .replace(R.id.autocomplete_fragment_container, autocompleteFragment)
-                .addToBackStack(null)
-                .commit()
-        }
-    }
+    // You can comment out or remove the setupPlacesAutocomplete function
+    // private fun setupPlacesAutocomplete(editText: EditText) { ... }
 
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
