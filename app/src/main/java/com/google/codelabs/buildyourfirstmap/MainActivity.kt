@@ -341,7 +341,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun fetchNearbyPlaces(location: LatLng, onComplete: () -> Unit) {
-        val radius = 2000 // Search radius in meters
+        val radius = distancePreference.text.toString().trim().toIntOrNull()?.times(500) ?: 2000 // Search radius in meters
         val client = OkHttpClient()
 
         var pendingRequests = 0
